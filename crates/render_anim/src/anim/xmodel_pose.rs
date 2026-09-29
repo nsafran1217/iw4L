@@ -686,7 +686,7 @@ fn unpack_packed_unit_vec(packed: u32) -> Vec3 {
 #[cfg(not(target_arch = "x86_64"))]
 fn unpack_packed_unit_vec(packed: u32) -> Vec3 {
     let bytes = packed.to_le_bytes();
-    let scale = (f32::from(bytes[3]) + 192.0) / 32_385.0;
+    let scale = dpvs_iw4::skin_unit_vec_scale(bytes[3]);
     Vec3::new(
         (f32::from(bytes[0]) - 127.0) * scale,
         (f32::from(bytes[1]) - 127.0) * scale,

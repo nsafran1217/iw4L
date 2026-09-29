@@ -339,10 +339,33 @@ pub fn skin_packed_transform_vector(v: [f32; 3], esi: &[f32; 16]) -> [f32; 3] {
     ]
 }
 
+/// `(w - SKIN_UNIT_VEC_W_BIAS) / SKIN_UNIT_VEC_DECODE` for every `w` byte of a
+/// packed unit vector, evaluated at compile time (IEEE, so bit-identical to
+/// dividing at run time). Decoding then multiplies instead of divides: on a
+/// target without a divide instruction (ia64) each division is a library call,
+/// and skinning decodes two unit vectors per vertex every frame.
+static SKIN_UNIT_VEC_SCALE: [f32; 256] = {
+    let mut table = [0.0f32; 256];
+    let mut w = 0;
+    while w < 256 {
+        table[w] = (w as f32 - SKIN_UNIT_VEC_W_BIAS) / SKIN_UNIT_VEC_DECODE;
+        w += 1;
+    }
+    table
+};
+
+/// The scale a packed unit vector's `w` byte stands for; see
+/// [`SKIN_UNIT_VEC_SCALE`].
+#[must_use]
+#[inline]
+pub fn skin_unit_vec_scale(w: u8) -> f32 {
+    SKIN_UNIT_VEC_SCALE[usize::from(w)]
+}
+
 #[must_use]
 pub fn skin_unpack_unit_vec(packed: u32) -> [f32; 3] {
     let b = packed.to_le_bytes();
-    let scale = (f32::from(b[3]) - SKIN_UNIT_VEC_W_BIAS) / SKIN_UNIT_VEC_DECODE;
+    let scale = skin_unit_vec_scale(b[3]);
     [
         (f32::from(b[0]) - SKIN_DUAL_UNIT_VEC_BIAS) * scale,
         (f32::from(b[1]) - SKIN_DUAL_UNIT_VEC_BIAS) * scale,
@@ -556,4 +579,29 @@ pub const SCENE_DOBJ_GATE_SKINNED_BASE: u32 = 4;
 #[must_use]
 pub fn scene_dobj_surface_count(gate: u32) -> Option<u32> {
     gate.checked_sub(SCENE_DOBJ_GATE_SKINNED_BASE)
+}
+
+#[cfg(test)]
+mod unit_vec_scale_tests {
+    use super::*;
+
+    #[test]
+    fn table_matches_runtime_division_bit_for_bit() {
+        for w in 0..=u8::MAX {
+            let runtime = (core::hint::black_box(f32::from(w)) - SKIN_UNIT_VEC_W_BIAS)
+                / core::hint::black_box(SKIN_UNIT_VEC_DECODE);
+            assert_eq!(
+                skin_unit_vec_scale(w).to_bits(),
+                runtime.to_bits(),
+                "w = {w}"
+            );
+            let legacy =
+                (core::hint::black_box(f32::from(w)) + 192.0) / core::hint::black_box(32_385.0f32);
+            assert_eq!(
+                skin_unit_vec_scale(w).to_bits(),
+                legacy.to_bits(),
+                "w = {w}"
+            );
+        }
+    }
 }

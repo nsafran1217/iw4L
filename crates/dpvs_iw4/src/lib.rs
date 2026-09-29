@@ -124,9 +124,9 @@ pub use scene_ent_skin::{
     skin_dual_dvar_vert_info_blend_bytes, skin_packed_mad_extras, skin_packed_transform_point,
     skin_packed_transform_vector, skin_packed_weighted_point, skin_quat_normalize,
     skin_rigid_scaled_placement, skin_rigid_vert_list_bone_mat_off,
-    skin_rigid_vert_list_packed_bytes, skin_skinned_cache_dest, skin_unpack_unit_vec,
-    skin_vert_info_blend_bytes, skin_vert_info_bucket_blend_off, skin_vert_info_bucket_packed_off,
-    skin_vert_info_packed_bytes,
+    skin_rigid_vert_list_packed_bytes, skin_skinned_cache_dest, skin_unit_vec_scale,
+    skin_unpack_unit_vec, skin_vert_info_blend_bytes, skin_vert_info_bucket_blend_off,
+    skin_vert_info_bucket_packed_off, skin_vert_info_packed_bytes,
 };
 pub use sort_key_uses::MATERIAL_SORT_KEY_ROW_MASK;
 pub use stats::WalkStats;
