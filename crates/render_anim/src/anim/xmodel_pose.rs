@@ -472,56 +472,96 @@ pub fn skin_packed_into(
             })
             .collect()
     });
-    for surf in &layout.surfaces {
-        if !surf.visible {
-            continue;
+    let skin_vertex = |row: &mut [u8; asset_iw4::size::GFX_PACKED_VERTEX], src: usize| {
+        *row = skel.packed_vertices.get(src).copied().unwrap_or([0; 32]);
+        if !active_vert.get(src).copied().unwrap_or(false) {
+            return;
         }
-        for local in 0..surf.vertex_count {
-            let src = surf.src_first_vertex + local;
-            let dst = surf.dest_first_vertex + local;
-            dest[dst] = skel.packed_vertices.get(src).copied().unwrap_or([0; 32]);
-            if !active_vert.get(src).copied().unwrap_or(false) {
-                continue;
-            }
-            let Some(skin) = skel.vert_skin.get(src) else {
-                continue;
-            };
-            let p = Vec3::from_array(skel.positions[src]);
-            let (posed_position, primary_basis) = if rigid_vert.get(src).copied().unwrap_or(false) {
-                let matrix = bone_cache[usize::from(skin.bones[0])].0;
-                (matrix.transform_point3(p), matrix)
-            } else {
-                let (primary, primary_esi) = &bone_cache[usize::from(skin.bones[0])];
-                let mut extras = [(primary_esi, 0u16); 3];
-                let mut extra_n = 0usize;
-                for extra in 1..4 {
-                    if skin.weights[extra] <= 0.0 {
-                        continue;
-                    }
-                    extras[extra_n] = (
-                        &bone_cache[usize::from(skin.bones[extra])].1,
-                        skin.weight_u16[extra],
-                    );
-                    extra_n += 1;
+        let Some(skin) = skel.vert_skin.get(src) else {
+            return;
+        };
+        let p = Vec3::from_array(skel.positions[src]);
+        let (posed_position, primary_basis) = if rigid_vert.get(src).copied().unwrap_or(false) {
+            let matrix = bone_cache[usize::from(skin.bones[0])].0;
+            (matrix.transform_point3(p), matrix)
+        } else {
+            let (primary, primary_esi) = &bone_cache[usize::from(skin.bones[0])];
+            let mut extras = [(primary_esi, 0u16); 3];
+            let mut extra_n = 0usize;
+            for extra in 1..4 {
+                if skin.weights[extra] <= 0.0 {
+                    continue;
                 }
-                (
-                    Vec3::from_array(dpvs_iw4::skin_packed_weighted_point(
-                        p.to_array(),
-                        primary_esi,
-                        &extras[..extra_n],
-                    )),
-                    *primary,
-                )
-            };
-            let posed_position = if posed_position == Vec3::ZERO && skin.weights[0] == 0.0 {
-                p
-            } else {
-                posed_position
-            };
-            pose_packed_vertex(&mut dest[dst], posed_position, primary_basis);
+                extras[extra_n] = (
+                    &bone_cache[usize::from(skin.bones[extra])].1,
+                    skin.weight_u16[extra],
+                );
+                extra_n += 1;
+            }
+            (
+                Vec3::from_array(dpvs_iw4::skin_packed_weighted_point(
+                    p.to_array(),
+                    primary_esi,
+                    &extras[..extra_n],
+                )),
+                *primary,
+            )
+        };
+        let posed_position = if posed_position == Vec3::ZERO && skin.weights[0] == 0.0 {
+            p
+        } else {
+            posed_position
+        };
+        pose_packed_vertex(row, posed_position, primary_basis);
+    };
+    let visible_vertices: usize = layout
+        .surfaces
+        .iter()
+        .filter(|surf| surf.visible)
+        .map(|surf| surf.vertex_count)
+        .sum();
+    let pool = bevy::tasks::ComputeTaskPool::try_get().filter(|pool| pool.thread_num() > 1);
+    match pool {
+        // Every vertex is independent: split the destination into chunks and
+        // skin each chunk's share of every visible surface on the compute pool,
+        // surfaces in the same order as the serial loop.
+        Some(pool) if visible_vertices >= PARALLEL_SKIN_MIN_VERTICES => {
+            use bevy::tasks::ParallelSliceMut;
+            let mut rows: &mut [[u8; asset_iw4::size::GFX_PACKED_VERTEX]] = dest;
+            rows.par_chunk_map_mut(pool, PARALLEL_SKIN_CHUNK, |index, chunk| {
+                let start = index * PARALLEL_SKIN_CHUNK;
+                let end = start + chunk.len();
+                for surf in layout.surfaces.iter().filter(|surf| surf.visible) {
+                    let first = surf.dest_first_vertex.max(start);
+                    let last = (surf.dest_first_vertex + surf.vertex_count).min(end);
+                    for dst in first..last {
+                        let src = surf.src_first_vertex + (dst - surf.dest_first_vertex);
+                        skin_vertex(&mut chunk[dst - start], src);
+                    }
+                }
+            });
+        }
+        _ => {
+            for surf in &layout.surfaces {
+                if !surf.visible {
+                    continue;
+                }
+                for local in 0..surf.vertex_count {
+                    skin_vertex(
+                        &mut dest[surf.dest_first_vertex + local],
+                        surf.src_first_vertex + local,
+                    );
+                }
+            }
         }
     }
 }
+
+/// Below this many visible vertices a skin runs serially: the compute pool's
+/// hand-off costs more than it saves.
+const PARALLEL_SKIN_MIN_VERTICES: usize = 4096;
+/// Destination vertices per compute-pool task.
+const PARALLEL_SKIN_CHUNK: usize = 1024;
 
 pub fn smodel_surfaces_from_blended(
     skel: &FpvSkel,
