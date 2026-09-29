@@ -32,27 +32,44 @@ pub(crate) struct StepRequest {
     output: Option<Snapshot>,
 }
 
+/// Runs an exclusive step system inside its own perf span, so the bench report
+/// and Perfetto can split `Step`. Only authority frames are spanned: prediction
+/// and replay run this schedule too, under `Predict`/`Reconcile`, and would
+/// otherwise be counted as part of the authority tick.
+macro_rules! spanned {
+    ($span:ident, $system:path) => {
+        |world: &mut World| {
+            let _span = world
+                .resource::<StepRequest>()
+                .reason
+                .advances_authority_world()
+                .then(|| perf::Span::$span.enter());
+            $system(world)
+        }
+    };
+}
+
 pub(crate) fn schedule() -> Schedule {
     let mut schedule = Schedule::default();
     schedule.add_systems(
         (
-            advance_time_system,
-            expire_transient_events_system,
-            crate::script::apply_disconnects,
-            crate::script::advance_mechanics,
-            crate::script::advance_scheduler,
+            spanned!(StepTime, advance_time_system),
+            spanned!(StepExpire, expire_transient_events_system),
+            spanned!(StepGscDisconnects, crate::script::apply_disconnects),
+            spanned!(StepGscMechanics, crate::script::advance_mechanics),
+            spanned!(StepGscScheduler, crate::script::advance_scheduler),
             (
-                apply_script_signals_system,
-                apply_actions_system,
-                crate::script::sync_players,
-                crate::script::sync_presence,
-                run_players_system,
-                record_collision_state_system,
-                run_entity_types_system,
-                dispatch_touches_system,
-                crate::script::sync_engine_events,
-                finalize_system,
-                publish_snapshot_system,
+                spanned!(StepGscSignals, apply_script_signals_system),
+                spanned!(StepActions, apply_actions_system),
+                spanned!(StepGscSyncPlayers, crate::script::sync_players),
+                spanned!(StepGscSyncPresence, crate::script::sync_presence),
+                spanned!(StepPlayers, run_players_system),
+                spanned!(StepCollision, record_collision_state_system),
+                spanned!(StepEntities, run_entity_types_system),
+                spanned!(StepTouches, dispatch_touches_system),
+                spanned!(StepGscSyncEvents, crate::script::sync_engine_events),
+                spanned!(StepFinalize, finalize_system),
+                spanned!(StepPublish, publish_snapshot_system),
             )
                 .chain()
                 .run_if(crate::script::healthy),
