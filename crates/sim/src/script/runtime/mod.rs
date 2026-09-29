@@ -1325,7 +1325,13 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
     while thread.state == ThreadState::Runnable {
         let frame = thread.frames.last().unwrap();
         let function = &program.functions[frame.function];
-        let Some((location, op)) = function.code.get(frame.pc).cloned() else {
+        // The location is only read when the instruction fails, so borrow it:
+        // it owns two strings, and cloning it cost an allocation per instruction.
+        let Some((location, op)) = function
+            .code
+            .get(frame.pc)
+            .map(|(location, op)| (location, op.clone()))
+        else {
             world.resource_mut::<Runtime>().fault = Some(Fault::at(
                 &function.location,
                 "invalid IR: instruction position out of range",
