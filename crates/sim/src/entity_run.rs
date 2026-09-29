@@ -147,10 +147,7 @@ fn think_script_mover(world: &mut FrameWorld, tick: Tick, entity: crate::EntityR
         return;
     };
     let apos = apos_from_entity_state(&mover.state);
-    for capabilities in world.entity_collision_capabilities_mut() {
-        if capabilities.owner.script_model() != Some(mover.id) {
-            continue;
-        }
+    for capabilities in world.collision_owner_rows_mut(mover.id) {
         if let Some(dobj) = capabilities.dobj.as_mut() {
             dobj.apply_trajectory_apos_at(apos, at_time);
         }
@@ -235,10 +232,7 @@ fn apply_parent_link_pose(
                 linked_id = Some(mover.id);
             }
             if let Some(id) = linked_id {
-                for capabilities in world.entity_collision_capabilities_mut() {
-                    if capabilities.owner.script_model() != Some(id) {
-                        continue;
-                    }
+                for capabilities in world.collision_owner_rows_mut(id) {
                     for brush in &mut capabilities.linked_brushes {
                         brush.origin = origin;
                         brush.angles = angles;

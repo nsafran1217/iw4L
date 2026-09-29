@@ -1512,6 +1512,19 @@ impl SimState {
         Some(&mut self.entity_collision_capabilities[index])
     }
 
+    /// Every capability row `id` owns. Rows are kept sorted by owner, so this is
+    /// a binary search rather than a scan of every collision owner.
+    pub(crate) fn collision_owner_rows_mut(
+        &mut self,
+        id: ScriptModelId,
+    ) -> &mut [EntityCollisionCapabilities] {
+        let owner = crate::AuthorityModelOwner::ScriptModel(id);
+        let rows = &mut self.entity_collision_capabilities;
+        let start = rows.partition_point(|row| row.owner < owner);
+        let end = start + rows[start..].partition_point(|row| row.owner == owner);
+        &mut rows[start..end]
+    }
+
     pub(crate) fn insert_collision_owner(&mut self, row: EntityCollisionCapabilities) {
         match self
             .entity_collision_capabilities
