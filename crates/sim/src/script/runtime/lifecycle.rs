@@ -95,6 +95,7 @@ pub(crate) fn install_level(
     runtime.objects.insert(1, BTreeMap::new());
     runtime.objects.insert(2, BTreeMap::new());
     runtime.next_object = 3;
+    runtime.collect_at = 0;
     runtime.next_entity_number = playerstate_iw4::GENTITY_SPAWN_BASE;
     runtime.tables = plan.tables.clone();
     runtime.rng = u32::from_le_bytes(program.fingerprint()[..4].try_into().unwrap()) | 1;

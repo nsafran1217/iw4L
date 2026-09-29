@@ -21,6 +21,8 @@ pub(crate) struct Runtime {
     pub(crate) started: bool,
     pub(crate) objects: BTreeMap<u64, BTreeMap<u32, Value>>,
     pub(crate) next_object: u64,
+    /// `next_object` value at which the scheduler next collects the heap.
+    pub(crate) collect_at: u64,
     pub(crate) arrays: BTreeMap<u64, BTreeMap<ArrayKey, Value>>,
     pub(crate) dynamic_symbols: BTreeMap<Arc<str>, u32>,
     pub(crate) buckets: BTreeMap<i64, VecDeque<u64>>,

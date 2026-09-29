@@ -1315,8 +1315,10 @@ pub(crate) fn advance_scheduler(world: &mut World) {
         runtime.buckets.remove(&now);
     }
     runtime.loading = false;
-    let _gc_span = perf::Span::StepGscGc.enter();
-    collect_heap(world);
+    if runtime.next_object >= runtime.collect_at {
+        let _gc_span = perf::Span::StepGscGc.enter();
+        collect_heap(world);
+    }
 }
 
 pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread, now: i64) {
@@ -1602,9 +1604,17 @@ impl Runtime {
     }
 }
 
+/// Heap ids the scripts must allocate after a collection before the next one.
+/// A collection walks the whole live heap (~5k objects and arrays in a
+/// boneyard match) while a tick allocates a few dozen, so collecting every
+/// tick spent most of the scheduler's time finding nothing to free. Collecting
+/// once half the live heap's worth of ids has been allocated keeps the
+/// garbage bounded to about half the heap.
+const MIN_COLLECT_INTERVAL: u64 = 1024;
+
 fn collect_heap(world: &mut World) {
-    let mut pending = vec![Value::Object(0), Value::Object(1), Value::Object(2)];
-    pending.extend(
+    let mut roots = vec![Value::Object(0), Value::Object(1), Value::Object(2)];
+    roots.extend(
         world
             .resource::<Runtime>()
             .entities
@@ -1612,38 +1622,100 @@ fn collect_heap(world: &mut World) {
             .map(|id| Value::Object(*id)),
     );
     for thread in world.query::<&Thread>().iter(world) {
-        pending.extend(thread.stack.iter().cloned());
+        roots.extend(thread.stack.iter().cloned());
         for frame in &thread.frames {
-            pending.push(frame.receiver.clone());
-            pending.extend(frame.locals.iter().cloned());
+            roots.push(frame.receiver.clone());
+            roots.extend(frame.locals.iter().cloned());
         }
     }
-    let mut objects = std::collections::BTreeSet::new();
-    let mut arrays = std::collections::BTreeSet::new();
     let mut runtime = world.resource_mut::<Runtime>();
-    runtime.native_roots(&mut pending);
+    runtime.native_roots(&mut roots);
     for waiter in &runtime.waiters {
-        pending.push(waiter.receiver.clone());
+        roots.push(waiter.receiver.clone());
         if let WaiterKind::Match { values } = &waiter.kind {
-            pending.extend(values.iter().cloned());
+            roots.extend(values.iter().cloned());
         }
     }
-    while let Some(value) = pending.pop() {
-        match value {
-            Value::Object(id) if objects.insert(id) => {
-                if let Some(fields) = runtime.objects.get(&id) {
-                    pending.extend(fields.values().cloned());
+    // Walk the heap by id: the fields are only borrowed, so marking costs no
+    // `Value` clones (and no `Arc` refcount traffic for the strings among them).
+    let capacity = usize::try_from(runtime.next_object).unwrap_or(0);
+    let mut objects = Marks::with_capacity(capacity);
+    let mut arrays = Marks::with_capacity(capacity);
+    let mut pending = Vec::with_capacity(roots.len());
+    for value in &roots {
+        push_heap_ref(value, &mut pending);
+    }
+    drop(roots);
+    while let Some(reference) = pending.pop() {
+        match reference {
+            HeapRef::Object(id) => {
+                if objects.insert(id)
+                    && let Some(fields) = runtime.objects.get(&id)
+                {
+                    for value in fields.values() {
+                        push_heap_ref(value, &mut pending);
+                    }
                 }
             }
-            Value::Array(id) if arrays.insert(id) => {
-                if let Some(values) = runtime.arrays.get(&id) {
-                    pending.extend(values.values().cloned());
+            HeapRef::Array(id) => {
+                if arrays.insert(id)
+                    && let Some(values) = runtime.arrays.get(&id)
+                {
+                    for value in values.values() {
+                        push_heap_ref(value, &mut pending);
+                    }
                 }
             }
-            _ => {}
         }
     }
-    runtime.objects.retain(|id, _| objects.contains(id));
-    runtime.dead.retain(|id| objects.contains(id));
-    runtime.arrays.retain(|id, _| arrays.contains(id));
+    runtime.objects.retain(|id, _| objects.contains(*id));
+    runtime.dead.retain(|id| objects.contains(*id));
+    runtime.arrays.retain(|id, _| arrays.contains(*id));
+    let live = (runtime.objects.len() + runtime.arrays.len()) as u64;
+    runtime.collect_at = runtime.next_object + (live / 2).max(MIN_COLLECT_INTERVAL);
+}
+
+enum HeapRef {
+    Object(u64),
+    Array(u64),
+}
+
+fn push_heap_ref(value: &Value, pending: &mut Vec<HeapRef>) {
+    match value {
+        Value::Object(id) => pending.push(HeapRef::Object(*id)),
+        Value::Array(id) => pending.push(HeapRef::Array(*id)),
+        _ => {}
+    }
+}
+
+/// A mark bit per heap id. Ids come from one counter (`Runtime::next_object`),
+/// so they are dense and a bitset beats a set lookup per reachable value.
+struct Marks(Vec<u64>);
+
+impl Marks {
+    fn with_capacity(ids: usize) -> Self {
+        Self(vec![0; ids.div_ceil(64)])
+    }
+
+    /// Sets `id`'s bit; false if it was already set.
+    fn insert(&mut self, id: u64) -> bool {
+        let Ok(id) = usize::try_from(id) else {
+            return false;
+        };
+        let (word, bit) = (id / 64, 1u64 << (id % 64));
+        if word >= self.0.len() {
+            self.0.resize(word + 1, 0);
+        }
+        let was = self.0[word] & bit != 0;
+        self.0[word] |= bit;
+        !was
+    }
+
+    fn contains(&self, id: u64) -> bool {
+        usize::try_from(id).is_ok_and(|id| {
+            self.0
+                .get(id / 64)
+                .is_some_and(|word| word & (1u64 << (id % 64)) != 0)
+        })
+    }
 }
