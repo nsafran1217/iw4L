@@ -24,7 +24,7 @@ pub use authority::inbox::{
     ServerTime, run_fixed_authority_stream,
 };
 pub use authority::thread::{
-    AuthorityLaunchSet, AuthorityPublishing, AuthorityThreadMode, PublishedAuthorityClock,
+    AuthorityFrameLag, AuthorityLaunchSet, AuthorityPublishing, AuthorityThreadMode,
     authority_inline, authority_thread_enabled,
 };
 pub use authority::runtime::{

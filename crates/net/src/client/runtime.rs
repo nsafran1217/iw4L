@@ -392,23 +392,29 @@ pub fn advance_cg_frame_clock(
     role: Res<RuntimeRole>,
     fixed: Res<Time<Fixed>>,
     adopted: Option<Res<LastAdoptedSnapshot>>,
-    published: Option<Res<crate::PublishedAuthorityClock>>,
+    lag: Option<ResMut<crate::AuthorityFrameLag>>,
 ) {
     let was_started = clock.started();
     let adopted_tick = adopted.as_ref().and_then(|a| a.next().map(|s| s.tick));
 
-    // With the authority on a worker thread the live clock runs ahead of what
-    // has been published; the client can only show published ticks.
-    let authority = published
-        .and_then(|published| published.0)
-        .or_else(|| authority.as_deref().copied());
+    // With the authority on a worker thread the client runs one frame behind
+    // the live clock, which is what has been published (AuthorityFrameLag).
+    let mut overstep_ms = fixed.overstep().as_millis() as i32;
+    let authority = match (authority.as_deref().copied(), lag) {
+        (Some(live), Some(mut lag)) => {
+            let (clock, overstep) = lag.shift(live, overstep_ms);
+            overstep_ms = overstep;
+            Some(clock)
+        }
+        (live, _) => live,
+    };
     let local_authority = authority.as_ref().filter(|_| role.runs_authority());
     let server_time = local_authority
         .map(|clock| ServerTime::from_ms(clock.time_ms))
         .or_else(|| adopted_tick.map(ServerTime::from_tick));
     if *role == RuntimeRole::Listen && cgame_active.0 && was_started {
         let server = authority.as_ref().expect("listen authority clock").time_ms;
-        clock.assign_server_time(server.wrapping_add(fixed.overstep().as_millis() as i32));
+        clock.assign_server_time(server.wrapping_add(overstep_ms));
     } else if *role == RuntimeRole::Client {
         clock.advance_remote(time.delta_secs(), cgame_active.0, server_time);
     } else {

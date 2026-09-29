@@ -53,11 +53,27 @@ impl AuthorityThreadMode {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AuthorityPublishing(pub bool);
 
-/// The authority clock of the newest tick published to the client. Kept only
-/// with the worker thread, where it trails the live clock by the ticks still
-/// being stepped; inline the live clock is the published one.
+/// The listen client's view of the authority clock with the worker thread: the
+/// live clock and fixed-step overstep as they were one frame earlier.
+///
+/// Inline, the client's server time is `live clock + overstep`, and every tick
+/// up to the live clock has been published by then. With the worker thread the
+/// ticks of this frame's fixed loop are published only at this frame's join,
+/// so the client sees exactly what inline saw a frame before. Using that value
+/// keeps the client's time continuous: following the newest published tick
+/// instead would step back by a tick whenever a batch is in flight.
 #[derive(Resource, Clone, Copy, Debug, Default)]
-pub struct PublishedAuthorityClock(pub Option<AuthorityClock>);
+pub struct AuthorityFrameLag {
+    previous: Option<(AuthorityClock, i32)>,
+}
+
+impl AuthorityFrameLag {
+    /// Records this frame's live clock and overstep (ms) and returns last
+    /// frame's (this frame's on the first call).
+    pub fn shift(&mut self, live: AuthorityClock, overstep_ms: i32) -> (AuthorityClock, i32) {
+        self.previous.replace((live, overstep_ms)).unwrap_or((live, overstep_ms))
+    }
+}
 
 /// The system set holding the launch, so systems that touch `AuthorityWorld`
 /// outside the client sets can order themselves before it.
@@ -144,8 +160,7 @@ fn run_job(job: Job) -> Done {
 
 pub(crate) fn register(app: &mut App, mode: AuthorityThreadMode) {
     app.insert_resource(mode)
-        .init_resource::<AuthorityPublishing>()
-        .init_resource::<PublishedAuthorityClock>();
+        .init_resource::<AuthorityPublishing>();
     // Inline (the default) runs every set every fixed tick; publish runs happen
     // only with the worker thread.
     app.configure_sets(
@@ -164,6 +179,7 @@ pub(crate) fn register(app: &mut App, mode: AuthorityThreadMode) {
         return;
     }
     app.init_resource::<DeferredBatch>()
+        .init_resource::<AuthorityFrameLag>()
         .insert_resource(AuthorityWorker::spawn())
         .add_systems(
             FixedUpdate,
@@ -233,15 +249,15 @@ fn defer_authority_step(
 }
 
 /// Ticks deferred by a fixed loop that ran before the match was torn down
-/// belong to the old world, and so does the published clock.
+/// belong to the old world, and so does the lagged clock.
 fn drop_deferred_on_match_torn_down(
     mut torn: MessageReader<MatchTornDown>,
     mut batch: ResMut<DeferredBatch>,
-    mut published: ResMut<PublishedAuthorityClock>,
+    mut lag: ResMut<AuthorityFrameLag>,
 ) {
     if torn.read().count() > 0 {
         *batch = DeferredBatch::default();
-        published.0 = None;
+        *lag = AuthorityFrameLag::default();
     }
 }
 
@@ -312,5 +328,4 @@ fn publish_tick(world: &mut World, meta: TickMeta, outcome: StepOutcome) {
     world.run_schedule(FixedUpdate);
     world.resource_mut::<AuthorityPublishing>().0 = false;
     *world.resource_mut::<AuthorityClock>() = live;
-    world.resource_mut::<PublishedAuthorityClock>().0 = Some(meta.clock);
 }
