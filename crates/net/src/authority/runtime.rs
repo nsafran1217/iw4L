@@ -886,9 +886,10 @@ fn fanout_loopback(
         .configuration_changes
         .push_journal(&tick.snapshot.meta.journal);
 
-    let mut listen_snapshot = tick.snapshot.clone();
     let mut seat_applied = 0i32;
-    if let Some(local) = queues.local.as_ref() {
+    // Borrows the live snapshot unless the local viewer's seat or mover
+    // reveals change it.
+    let listen_snapshot = if let Some(local) = queues.local.as_ref() {
         let (out, sample) = crate::policy::seat::snapshot_and_sample_for_viewer(
             &archive,
             &seats,
@@ -896,7 +897,6 @@ fn fanout_loopback(
             local.0,
             clock.time_ms,
         );
-        listen_snapshot = out;
         if let Some(sample) = sample {
             seat_applied = 1;
             let session = seats.get(local.0);
@@ -918,7 +918,10 @@ fn fanout_loopback(
                     .map(|m| client_lifecycle_dump_label(m.lifecycle))
             });
         }
-    }
+        out
+    } else {
+        std::borrow::Cow::Borrowed(&tick.snapshot)
+    };
     let local_id = queues.local.as_ref().map(|id| id.0);
     let world_row = local_id.and_then(|id| {
         queues
