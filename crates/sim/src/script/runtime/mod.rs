@@ -1269,6 +1269,7 @@ pub(crate) fn advance_scheduler(world: &mut World) {
         }
         runtime.buckets.insert(now, current);
     }
+    let threads_span = perf::Span::StepGscThreads.enter();
     loop {
         let next = world
             .resource_mut::<Runtime>()
@@ -1299,6 +1300,7 @@ pub(crate) fn advance_scheduler(world: &mut World) {
             break;
         }
     }
+    drop(threads_span);
     let deletes = std::mem::take(&mut world.resource_mut::<Runtime>().pending_deletes);
     for object in deletes {
         world.resource_mut::<Runtime>().delete_entity(object);
@@ -1313,6 +1315,7 @@ pub(crate) fn advance_scheduler(world: &mut World) {
         runtime.buckets.remove(&now);
     }
     runtime.loading = false;
+    let _gc_span = perf::Span::StepGscGc.enter();
     collect_heap(world);
 }
 
