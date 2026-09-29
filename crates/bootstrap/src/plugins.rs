@@ -45,6 +45,9 @@ pub fn add_runtime_plugins_with_role(app: &mut App, role: RuntimeRole) {
         .add_plugins(RenderPlugin)
         .add_plugins(SessionPlugin);
 
+    #[cfg(feature = "bevy-trace")]
+    app.add_systems(PostUpdate, flush_chrome_trace_on_exit);
+
     let threading = ScheduleThreading::from_env();
     if !threading.main {
         for label in [
@@ -79,6 +82,27 @@ pub fn add_runtime_plugins_with_role(app: &mut App, role: RuntimeRole) {
             schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         });
     }
+}
+
+/// Writes the `bevy-trace` Chrome trace before `exit_process`. The trace is
+/// only written when bevy_log's flush guard drops, and every exit ends in
+/// `std::process::exit`, which drops nothing: without this the file is empty.
+/// The guard's type is private to bevy_log, so it is found by name.
+#[cfg(feature = "bevy-trace")]
+fn flush_chrome_trace_on_exit(mut exit: MessageReader<AppExit>, mut commands: Commands) {
+    if exit.read().last().is_none() {
+        return;
+    }
+    commands.queue(|world: &mut World| {
+        let guards: Vec<_> = world
+            .iter_resources()
+            .filter(|(info, _)| info.name().to_string().ends_with("FlushGuard"))
+            .map(|(info, _)| info.id())
+            .collect();
+        for id in guards {
+            world.remove_resource_by_id(id);
+        }
+    });
 }
 
 const MULTI_THREADED_ENV: &str = "IW4L_MULTI_THREADED";
