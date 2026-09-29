@@ -400,6 +400,27 @@ macro_rules! spans {
                 category: "iw4l.sim",
                 coverage_root: false,
             },
+            AuthorityWorkerStep {
+                ordinal: 57,
+                name: "authority_worker_step",
+                track: "span.authority_worker_step",
+                category: "iw4l.sim",
+                coverage_root: false,
+            },
+            AuthorityJoinWait {
+                ordinal: 58,
+                name: "authority_join_wait",
+                track: "span.authority_join_wait",
+                category: "iw4l.sim",
+                coverage_root: false,
+            },
+            AuthorityPublish {
+                ordinal: 59,
+                name: "authority_publish",
+                track: "span.authority_publish",
+                category: "iw4l.sim",
+                coverage_root: false,
+            },
         }
     };
 }

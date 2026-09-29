@@ -132,9 +132,19 @@ fn sum_named_fixed(values: &[Option<u64>; frame::AUTHORITY_TOC.len()]) -> Option
     any.then_some(sum)
 }
 
-fn stamp_authority_edge<const EDGE: u8>(mut census: ResMut<AuthorityPhaseCensus>) {
+fn stamp_authority_edge<const EDGE: u8>(
+    mut census: ResMut<AuthorityPhaseCensus>,
+    mode: Option<Res<crate::AuthorityThreadMode>>,
+    publishing: Option<Res<crate::AuthorityPublishing>>,
+) {
+    // With the authority on a worker thread a FixedUpdate pass runs either the
+    // input half (Advance..Step) or, to publish, the output half; only the
+    // sets that run get a span, so a skipped set is not counted as a phase.
+    let threaded = mode.is_some_and(|mode| mode.enabled);
+    let publishing = publishing.is_some_and(|p| p.0);
+    let runs = |slot: usize| !threaded || (slot >= 4) == publishing;
     let alloc = diag::process_allocations();
-    if EDGE > 0 {
+    if EDGE > 0 && runs(EDGE as usize - 1) {
         let slot = EDGE as usize - 1;
         authority_toc_span(slot).end();
         if let Some(n0) = census.seam_n {
@@ -146,7 +156,7 @@ fn stamp_authority_edge<const EDGE: u8>(mut census: ResMut<AuthorityPhaseCensus>
             *b = Some(b.unwrap_or(0) + alloc.process_allocation_bytes.saturating_sub(b0));
         }
     }
-    if (EDGE as usize) < frame::AUTHORITY_TOC.len() {
+    if (EDGE as usize) < frame::AUTHORITY_TOC.len() && runs(EDGE as usize) {
         authority_toc_span(EDGE as usize).begin();
     }
     census.seam_n = Some(alloc.process_allocations);

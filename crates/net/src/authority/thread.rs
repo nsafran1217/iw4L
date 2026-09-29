@@ -129,6 +129,7 @@ fn run_job(job: Job) -> Done {
     let Job { mut world, work } = job;
     let mut outcomes = Vec::with_capacity(work.len());
     for tick in work {
+        let _span = perf::Span::AuthorityWorkerStep.enter();
         let outcome = step_world(&mut world, tick.tick, tick.input, tick.samples);
         // A failed step freezes the world, as it does inline: the rest of the
         // batch is not stepped.
@@ -268,18 +269,22 @@ fn join_authority_batch(world: &mut World) {
     let Some(meta) = world.resource_mut::<AuthorityWorker>().in_flight.take() else {
         return;
     };
-    let result = world
-        .resource::<AuthorityWorker>()
-        .done
-        .lock()
-        .expect("authority worker channel")
-        .recv()
-        .expect("the authority worker thread is gone");
+    let result = {
+        let _span = perf::Span::AuthorityJoinWait.enter();
+        world
+            .resource::<AuthorityWorker>()
+            .done
+            .lock()
+            .expect("authority worker channel")
+            .recv()
+            .expect("the authority worker thread is gone")
+    };
     let done = match result {
         Ok(done) => done,
         Err(panic) => std::panic::resume_unwind(panic),
     };
     world.insert_resource(AuthorityWorld(done.world));
+    let _span = perf::Span::AuthorityPublish.enter();
     for (meta, outcome) in meta.into_iter().zip(done.outcomes) {
         publish_tick(world, meta, outcome);
     }
