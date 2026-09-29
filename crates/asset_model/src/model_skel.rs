@@ -113,6 +113,7 @@ impl ModelSkel {
             coll_surfs: self.coll_surfs.clone(),
             bounds: self.bounds,
             radius: self.radius,
+            single_dobj: Default::default(),
         })
     }
 

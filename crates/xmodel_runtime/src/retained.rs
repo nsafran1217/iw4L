@@ -54,7 +54,15 @@ pub struct RetainedModelCapability {
     pub bounds: Option<([f32; 3], [f32; 3])>,
 
     pub radius: Option<f32>,
+
+    /// This model's DObj on its own, built on first use. Posing only reads a
+    /// DObj, and building one hashes and copies every bone name, so a model
+    /// posed every tick (animated map models) should build it once.
+    pub single_dobj: SingleDObjCache,
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct SingleDObjCache(std::sync::OnceLock<DObj>);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CollTri {
@@ -118,8 +126,17 @@ impl RetainedModelCapability {
         world_from_model: Mat4,
         controller: impl FnOnce(&DObj, &PartBits, &mut [Local]),
     ) -> Result<Vec<Mat4>, MaterializeError> {
+        pose_dobj_with_controller(self.single_dobj()?, request, world_from_model, controller)
+    }
+
+    /// [`DObj::build`] of this model alone, cached. A build error is not
+    /// cached: it is returned again on the next call.
+    pub fn single_dobj(&self) -> Result<&DObj, MaterializeError> {
+        if let Some(dobj) = self.single_dobj.0.get() {
+            return Ok(dobj);
+        }
         let dobj = DObj::build(&[(&self.pose, None)])?;
-        pose_dobj_with_controller(&dobj, request, world_from_model, controller)
+        Ok(self.single_dobj.0.get_or_init(|| dobj))
     }
 
     pub fn collision(
@@ -209,12 +226,15 @@ pub fn collision_models_with_controller(
     if models.is_empty() {
         return Ok(Vec::new());
     }
-    let descriptors: Vec<(&ModelPoseSrc, Option<Attach>)> = models
-        .iter()
-        .map(|(model, attach)| (&model.pose, attach.clone()))
-        .collect();
-    let dobj = DObj::build(&descriptors)?;
-    collision_dobj_with_controller(&dobj, models, request, world_from_model, controller)
+    let built;
+    let dobj = match models {
+        [(model, None)] => model.single_dobj()?,
+        _ => {
+            built = build_models_dobj(models)?;
+            &built
+        }
+    };
+    collision_dobj_with_controller(dobj, models, request, world_from_model, controller)
 }
 
 pub fn collision_dobj_with_controller(
@@ -270,6 +290,16 @@ pub fn collision_dobj_with_controller(
     Ok(bones)
 }
 
+fn build_models_dobj(
+    models: &[(&RetainedModelCapability, Option<Attach>)],
+) -> Result<DObj, MaterializeError> {
+    let descriptors: Vec<(&ModelPoseSrc, Option<Attach>)> = models
+        .iter()
+        .map(|(model, attach)| (&model.pose, attach.clone()))
+        .collect();
+    Ok(DObj::build(&descriptors)?)
+}
+
 fn geom_collision_models(
     models: &[(&RetainedModelCapability, Option<Attach>)],
     request: &DObjPoseRequest,
@@ -279,12 +309,15 @@ fn geom_collision_models(
     if models.is_empty() {
         return Ok(Vec::new());
     }
-    let descriptors: Vec<(&ModelPoseSrc, Option<Attach>)> = models
-        .iter()
-        .map(|(model, attach)| (&model.pose, attach.clone()))
-        .collect();
-    let dobj = DObj::build(&descriptors)?;
-    let posed = pose_dobj_with_controller(&dobj, request, world_from_model, |_, _, _| {})?;
+    let built;
+    let dobj = match models {
+        [(model, None)] => model.single_dobj()?,
+        _ => {
+            built = build_models_dobj(models)?;
+            &built
+        }
+    };
+    let posed = pose_dobj_with_controller(dobj, request, world_from_model, |_, _, _| {})?;
     let mut bones = Vec::new();
     for (slot, (model, _)) in dobj.models.iter().zip(models.iter()) {
         for surf in &model.coll_surfs {
