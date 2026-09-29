@@ -47,6 +47,12 @@ pub struct GfxGlassMeshDraw {
 
     pub pending_lighting: Option<ModelLightingRequest>,
 
+    /// The light-grid lookup fallback computed for this draw, with the origin
+    /// and scene lighting it was computed for: it walks every primary light
+    /// region, and a glass piece's origin and the map's lights do not change
+    /// from frame to frame.
+    pub lookup_fallback: Option<GlassLookupFallback>,
+
     pub init_index: u16,
 
     pub piece: u16,
@@ -56,6 +62,13 @@ pub struct GfxGlassMeshDraw {
     pub radius: f32,
 
     pub reflection_probe_index: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassLookupFallback {
+    origin: [f32; 3],
+    lighting: (usize, usize, usize, usize, u32),
+    value: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -454,6 +467,7 @@ impl GfxGlassMeshPlan {
             ),
             lighting_prev: 0,
             pending_lighting: None,
+            lookup_fallback: None,
             init_index,
             piece: piece as u16,
             origin,
@@ -768,10 +782,26 @@ pub(crate) fn enqueue_glass_model_lighting(
             draw.reflection_probe_index = 0;
             continue;
         }
-        let lookup_fallback = scene
-            .as_ref()
-            .map(|s| s.dyn_atpoint_lookup_fallback(draw.origin, Some(box_half)))
-            .unwrap_or(lighting_iw4::LIGHT_GRID_ATPOINT_EMPTY_PRIMARY);
+        let lookup_fallback = match scene.as_ref() {
+            Some(scene) => {
+                let lighting = scene.dyn_atpoint_lighting_stamp();
+                match draw.lookup_fallback {
+                    Some(cached) if cached.origin == draw.origin && cached.lighting == lighting => {
+                        cached.value
+                    }
+                    _ => {
+                        let value = scene.dyn_atpoint_lookup_fallback(draw.origin, Some(box_half));
+                        draw.lookup_fallback = Some(GlassLookupFallback {
+                            origin: draw.origin,
+                            lighting,
+                            value,
+                        });
+                        value
+                    }
+                }
+            }
+            None => lighting_iw4::LIGHT_GRID_ATPOINT_EMPTY_PRIMARY,
+        };
         draw.pending_lighting = Some(requests.request(ModelLightingRequest {
             owner,
             origin: draw.origin,

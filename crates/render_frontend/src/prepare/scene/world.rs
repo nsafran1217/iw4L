@@ -920,6 +920,20 @@ impl WorldScene {
         Ok(())
     }
 
+    /// Identifies the lighting [`Self::dyn_atpoint_lookup_fallback`] reads (the
+    /// primary light cull and the light region hulls, both installed with the
+    /// map), so a caller can tell a cached result from a stale one.
+    pub fn dyn_atpoint_lighting_stamp(&self) -> (usize, usize, usize, usize, u32) {
+        let hulls = self.light_region_hulls.as_ref();
+        (
+            self.primary_light_cull.as_ptr() as usize,
+            self.primary_light_cull.len(),
+            hulls.map_or(0, |h| h.as_ptr() as usize),
+            hulls.map_or(0, |h| h.len()),
+            self.sun_primary_light_count,
+        )
+    }
+
     pub fn dyn_atpoint_lookup_fallback(&self, mid: [f32; 3], box_half: Option<[f32; 3]>) -> u8 {
         match self.dyn_atpoint_walk_trace(mid, box_half) {
             Some(trace) => trace.walk as u8,
