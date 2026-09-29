@@ -49,13 +49,6 @@ fn vector(runtime: &mut Runtime, id: u64, name: &str) -> [f32; 3] {
     }
 }
 
-fn model_field(runtime: &mut Runtime, id: u64) -> Option<Arc<str>> {
-    match runtime.object_field(id, "model") {
-        Value::String(model) if !model.is_empty() && !model.starts_with('*') => Some(model),
-        _ => None,
-    }
-}
-
 pub(crate) fn spawn_presence(world: &mut World, origin: [f32; 3]) -> Result<ScriptModelId, String> {
     let mut runtime = world.resource_mut::<Runtime>();
     let serial = runtime.next_spawned_presence;
@@ -93,11 +86,18 @@ pub(crate) fn settle_collision(world: &mut World) {
         .iter()
         .filter_map(|(id, e)| Some((*id, e.presence?, e.hidden, e.solid)))
         .collect();
+    let (origin_field, angles_field) = (runtime.symbol("origin"), runtime.symbol("angles"));
+    let vector_field = |runtime: &Runtime, object, field| match runtime
+        .object_field_by_symbol(object, field)
+    {
+        Some(Value::Vector(v)) => *v,
+        _ => [0.0; 3],
+    };
     let wanted: BTreeMap<ScriptModelId, ([f32; 3], [f32; 3], bool, bool)> = placed
         .into_iter()
         .map(|(object, presence, hidden, solid)| {
-            let origin = vector(&mut runtime, object, "origin");
-            let angles = vector(&mut runtime, object, "angles");
+            let origin = vector_field(&runtime, object, origin_field);
+            let angles = vector_field(&runtime, object, angles_field);
             (presence, (origin, angles, hidden, solid))
         })
         .collect();
@@ -326,29 +326,46 @@ fn collect_wanted(world: &mut World) -> Vec<Wanted> {
         .filter_map(|(id, e)| e.presence.map(|p| (*id, p, e.hidden, e.shown_to, e.solid)))
         .collect();
     let mut wanted = Vec::with_capacity(ids.len());
+    let (origin_field, angles_field, model_field) = (
+        runtime.symbol("origin"),
+        runtime.symbol("angles"),
+        runtime.symbol("model"),
+    );
     for (object, presence, hidden, shown_to, solid) in ids {
-        let origin = vector(&mut runtime, object, "origin");
-        let angles = vector(&mut runtime, object, "angles");
-        let model = model_field(&mut runtime, object);
-        let entity = runtime.entities.get_mut(&object).unwrap();
-        let part_ops = std::mem::take(&mut entity.part_ops);
-        let anim_op = entity.anim_op.take();
-        let attachments = entity.attachments.clone();
-        let unchanged = part_ops.is_empty()
-            && anim_op.is_none()
-            && runtime.shown.get(&object).is_some_and(|shown| {
+        let vector = |field| match runtime.object_field_by_symbol(object, field) {
+            Some(Value::Vector(v)) => *v,
+            _ => [0.0; 3],
+        };
+        let origin = vector(origin_field);
+        let angles = vector(angles_field);
+        let model = match runtime.object_field_by_symbol(object, model_field) {
+            Some(Value::String(model)) if !model.is_empty() && !model.starts_with('*') => {
+                Some(model.clone())
+            }
+            _ => None,
+        };
+        let Runtime {
+            entities, shown, ..
+        } = &mut *runtime;
+        let entity = entities.get_mut(&object).unwrap();
+        let unchanged = entity.part_ops.is_empty()
+            && entity.anim_op.is_none()
+            && shown.get(&object).is_some_and(|shown| {
                 !shown.moving
                     && shown.hidden == hidden
                     && shown.shown_to == shown_to
                     && shown.solid == solid
                     && shown.model == model
-                    && shown.attachments == attachments
+                    && shown.attachments == entity.attachments
                     && near(shown.origin, origin)
                     && near_angles(shown.angles, angles)
             });
         if unchanged {
             continue;
         }
+        let part_ops = std::mem::take(&mut entity.part_ops);
+        let anim_op = entity.anim_op.take();
+        let attachments = entity.attachments.clone();
         wanted.push(Wanted {
             object,
             presence,

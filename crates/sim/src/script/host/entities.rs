@@ -222,6 +222,13 @@ impl Runtime {
             .unwrap_or(Value::Undefined)
     }
 
+    /// A field read by an already-resolved symbol, for loops that read the
+    /// same field of many objects: [`Self::object_field`] resolves the name
+    /// (a string-keyed map search) on every call.
+    pub(crate) fn object_field_by_symbol(&self, id: u64, field: u32) -> Option<&Value> {
+        self.objects.get(&id)?.get(&field)
+    }
+
     pub(crate) fn set_object_field(&mut self, id: u64, name: &str, value: Value) {
         let field = self.symbol(name);
         if let Some(fields) = self.objects.get_mut(&id) {
