@@ -3248,6 +3248,15 @@ fn assert_entity_runtime_snapshot(snapshot: &Snapshot) {
         .expect("authoritative snapshot carried an invalid EntityKernel state");
 
     let mut typed_numbers = std::collections::HashSet::new();
+    // Rows by entity number: an equal row has the mover's number, so looking
+    // only among those checks the same thing as scanning every row per mover.
+    let mut rows_by_number: std::collections::HashMap<_, Vec<&entity_iw4::EntityState>> =
+        std::collections::HashMap::new();
+    if !snapshot.meta.script_movers.is_empty() {
+        for state in &snapshot.meta.entities {
+            rows_by_number.entry(state.number).or_default().push(state);
+        }
+    }
     for mover in &snapshot.meta.script_movers {
         assert!(
             typed_numbers.insert(mover.state.number),
@@ -3262,7 +3271,9 @@ fn assert_entity_runtime_snapshot(snapshot: &Snapshot) {
             "script mover does not occupy a ScriptMover kernel slot"
         );
         assert!(
-            snapshot.meta.entities.contains(&mover.state),
+            rows_by_number
+                .get(&mover.state.number)
+                .is_some_and(|rows| rows.iter().any(|state| **state == mover.state)),
             "typed script mover is absent from entityState presentation rows"
         );
     }
