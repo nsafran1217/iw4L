@@ -23,6 +23,10 @@ pub use authority::inbox::{
     ClientCommandInbox, GatheredCommands, MAX_PENDING_ACTIONS_PER_CLIENT, MAX_REDUNDANT_CMDS,
     ServerTime, run_fixed_authority_stream,
 };
+pub use authority::thread::{
+    AuthorityLaunchSet, AuthorityPublishing, AuthorityThreadMode, PublishedAuthorityClock,
+    authority_inline, authority_thread_enabled,
+};
 pub use authority::runtime::{
     AuthorityInputGate, AuthorityLoadHold, AuthorityPhaseCensus, AuthorityPhaseTrace,
     AuthorityWorld, ClientShotSamples, DumpConfigurationChangeLog, DumpDeathLog, DumpGiveLog,

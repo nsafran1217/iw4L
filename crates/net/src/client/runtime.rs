@@ -392,10 +392,16 @@ pub fn advance_cg_frame_clock(
     role: Res<RuntimeRole>,
     fixed: Res<Time<Fixed>>,
     adopted: Option<Res<LastAdoptedSnapshot>>,
+    published: Option<Res<crate::PublishedAuthorityClock>>,
 ) {
     let was_started = clock.started();
     let adopted_tick = adopted.as_ref().and_then(|a| a.next().map(|s| s.tick));
 
+    // With the authority on a worker thread the live clock runs ahead of what
+    // has been published; the client can only show published ticks.
+    let authority = published
+        .and_then(|published| published.0)
+        .or_else(|| authority.as_deref().copied());
     let local_authority = authority.as_ref().filter(|_| role.runs_authority());
     let server_time = local_authority
         .map(|clock| ServerTime::from_ms(clock.time_ms))

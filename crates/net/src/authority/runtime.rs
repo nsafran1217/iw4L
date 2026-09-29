@@ -398,6 +398,11 @@ fn push_phase(trace: Option<ResMut<AuthorityPhaseTrace>>, name: &'static str) {
     }
 }
 
+/// A publish run of `FixedUpdate` (worker thread) is not a fixed tick.
+fn not_publishing_tick(publishing: Option<Res<crate::AuthorityPublishing>>) -> bool {
+    !publishing.is_some_and(|p| p.0)
+}
+
 fn begin_fixed_census(mut census: ResMut<FixedUpdateCensus>) {
     if !census.span_open {
         perf::Span::FramesFixedMs.begin();
@@ -714,13 +719,38 @@ fn step_authority(
     let Some(input) = pending.0.take() else {
         return;
     };
+    let samples = samples.0.iter().map(|(key, sample)| (*key, *sample));
+    match step_world(&mut world.0, clock.tick, input, samples) {
+        StepOutcome::Stepped(tick) => pending_step.0 = Some(tick),
+        StepOutcome::Fault(fault) => {
+            if report_step_fault(fault) {
+                exit_level.write(ExitLevelCalled);
+            }
+        }
+    }
+}
 
-    world
-        .0
-        .set_lagcomp_commands(samples.0.iter().map(|(key, sample)| (*key, *sample)));
+/// What stepping the authority one tick produced.
+pub(crate) enum StepOutcome {
+    Stepped(ServerTickData),
+    /// The step failed; carries the script fault to report (its display text
+    /// and its message), if the world had one it had not reported yet.
+    Fault(Option<(String, String)>),
+}
+
+/// One authority tick: the step itself and what the rest of the pipeline takes
+/// out of the world right after it. Touches only `world`, so it runs as well on
+/// the authority worker thread as inline.
+pub(crate) fn step_world(
+    world: &mut sim::SimWorld,
+    tick: u32,
+    input: sim::TickInput,
+    samples: impl IntoIterator<Item = ((ClientId, i32), sim::ShotSampleProvenance)>,
+) -> StepOutcome {
+    world.set_lagcomp_commands(samples);
     let stepped = sim::try_step(
-        &mut world.0,
-        sim::Tick(clock.tick),
+        world,
+        sim::Tick(tick),
         &input,
         crate::AUTHORITY_MS,
         sim::StepReason::AuthorityFrame,
@@ -728,28 +758,35 @@ fn step_authority(
     // A terminal script error drops the match to the lobby;
     // the world stays frozen until the swap replaces it.
     let Ok(snapshot) = stepped else {
-        if let Some(fault) = world.0.take_script_fault() {
-            diag::error!(Sim, "GSC execution failed: {fault}");
-            diag::script_boundary(
-                "fault",
-                &format!(" fault=\"{}\"", fault.message.replace('"', "'")),
-            );
-            exit_level.write(ExitLevelCalled);
-        }
-        return;
+        return StepOutcome::Fault(
+            world
+                .take_script_fault()
+                .map(|fault| (fault.to_string(), fault.message.clone())),
+        );
     };
-    let weapon_script_names = world.0.weapon_script_names();
-    let pending_final_kill = world.0.take_pending_final_kill();
-    let script_seats = world.0.script_seats();
-    let script_exit_level = world.0.take_script_exit_level();
-    pending_step.0 = Some(ServerTickData {
+    let weapon_script_names = world.weapon_script_names();
+    let pending_final_kill = world.take_pending_final_kill();
+    let script_seats = world.script_seats();
+    let script_exit_level = world.take_script_exit_level();
+    StepOutcome::Stepped(ServerTickData {
         input,
         snapshot,
         weapon_script_names,
         pending_final_kill,
         script_seats,
         script_exit_level,
-    });
+    })
+}
+
+/// Logs a failed step's script fault. Returns whether the match should exit
+/// (`ExitLevelCalled`), which is when there was a fault to report.
+pub(crate) fn report_step_fault(fault: Option<(String, String)>) -> bool {
+    let Some((fault, message)) = fault else {
+        return false;
+    };
+    diag::error!(Sim, "GSC execution failed: {fault}");
+    diag::script_boundary("fault", &format!(" fault=\"{}\"", message.replace('"', "'")));
+    true
 }
 
 fn publish_server_tick(
@@ -1152,12 +1189,15 @@ pub fn register_listen_runtime(app: &mut App) {
             FixedUpdate,
             (
                 begin_fixed_census
+                    .run_if(not_publishing_tick)
                     .before(AuthoritySet::Advance)
                     .before(frame::AuthorityEdge(0)),
                 advance_authority_clock.in_set(AuthoritySet::Advance),
                 ingress_authority.in_set(AuthoritySet::Ingress),
                 gather_authority_input.in_set(AuthoritySet::Gather),
-                step_authority.in_set(AuthoritySet::Step),
+                step_authority
+                    .in_set(AuthoritySet::Step)
+                    .run_if(crate::authority_inline),
                 publish_server_tick.in_set(AuthoritySet::Snapshot),
                 fanout_loopback.in_set(AuthoritySet::Fanout),
                 apply_connection_faults
@@ -1165,7 +1205,9 @@ pub fn register_listen_runtime(app: &mut App) {
                     .before(retire_departed_peers),
                 retire_departed_peers.in_set(AuthoritySet::Bookkeeping),
                 authority_bookkeeping.in_set(frame::AuthorityBookkeeping),
-                end_fixed_census.after(AuthoritySet::Bookkeeping),
+                end_fixed_census
+                    .run_if(not_publishing_tick)
+                    .after(AuthoritySet::Bookkeeping),
             )
                 .run_if(authority_should_tick),
         );
@@ -1174,12 +1216,15 @@ pub fn register_listen_runtime(app: &mut App) {
             FixedUpdate,
             (
                 begin_fixed_census
+                    .run_if(not_publishing_tick)
                     .before(AuthoritySet::Advance)
                     .before(frame::AuthorityEdge(0)),
                 advance_authority_clock.in_set(AuthoritySet::Advance),
                 ingress_authority.in_set(AuthoritySet::Ingress),
                 gather_authority_input.in_set(AuthoritySet::Gather),
-                step_authority.in_set(AuthoritySet::Step),
+                step_authority
+                    .in_set(AuthoritySet::Step)
+                    .run_if(crate::authority_inline),
                 publish_server_tick.in_set(AuthoritySet::Snapshot),
                 fanout_loopback
                     .in_set(AuthoritySet::Fanout)
@@ -1189,7 +1234,9 @@ pub fn register_listen_runtime(app: &mut App) {
                     .before(retire_departed_peers),
                 retire_departed_peers.in_set(AuthoritySet::Bookkeeping),
                 authority_bookkeeping.in_set(frame::AuthorityBookkeeping),
-                end_fixed_census.after(AuthoritySet::Bookkeeping),
+                end_fixed_census
+                    .run_if(not_publishing_tick)
+                    .after(AuthoritySet::Bookkeeping),
             )
                 .run_if(authority_should_tick),
         );

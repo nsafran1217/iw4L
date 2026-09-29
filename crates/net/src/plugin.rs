@@ -80,6 +80,10 @@ impl Plugin for NetPlugin {
         }
 
         crate::authority::runtime::register_listen_runtime(app);
+        crate::authority::thread::register(
+            app,
+            crate::AuthorityThreadMode::from_env(self.role, master_enabled),
+        );
         if self.role == RuntimeRole::Listen
             || self.role == RuntimeRole::Client
             || self.role == RuntimeRole::Replay

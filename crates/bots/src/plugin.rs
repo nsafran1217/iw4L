@@ -115,7 +115,10 @@ impl Plugin for BotsPlugin {
                     boot_bots,
                     apply_bot_tp,
                 )
-                    .chain(),
+                    .chain()
+                    // These read the authority world, which is on the worker
+                    // thread from the launch until ClientSet::Diag.
+                    .before(net::AuthorityLaunchSet),
             )
             .add_systems(
                 Update,
