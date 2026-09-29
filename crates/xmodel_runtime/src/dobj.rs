@@ -58,7 +58,14 @@ pub struct DObj {
     pub bones: Vec<Bone>,
     pub models: Vec<ModelSlot>,
     pub duplicates: Vec<(usize, usize)>,
+    /// First bone index for each bone name, built on first use: posing maps
+    /// every animation leaf's tracks to bones by name, and a player's DObj is
+    /// posed every tick.
+    pub name_index: BoneNameIndex,
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct BoneNameIndex(std::sync::OnceLock<std::collections::HashMap<Box<str>, usize>>);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DObjBoneOrientation {
@@ -280,6 +287,7 @@ impl DObj {
             bones,
             models: slots,
             duplicates,
+            name_index: BoneNameIndex::default(),
         })
     }
 
@@ -300,10 +308,15 @@ impl DObj {
     }
 
     pub fn tracks_for(&self, clip: &AnimClip) -> Vec<Option<usize>> {
-        let mut first_by_name = std::collections::HashMap::with_capacity(self.bones.len());
-        for (index, bone) in self.bones.iter().enumerate() {
-            first_by_name.entry(bone.name.as_str()).or_insert(index);
-        }
+        let first_by_name = self.name_index.0.get_or_init(|| {
+            let mut first_by_name = std::collections::HashMap::with_capacity(self.bones.len());
+            for (index, bone) in self.bones.iter().enumerate() {
+                first_by_name
+                    .entry(bone.name.as_str().into())
+                    .or_insert(index);
+            }
+            first_by_name
+        });
         clip.tracks
             .iter()
             .map(|track| first_by_name.get(track.name.as_str()).copied())
