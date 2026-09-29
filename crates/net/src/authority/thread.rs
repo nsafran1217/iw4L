@@ -2,9 +2,9 @@
 //!
 //! The fixed loop still runs Advance, Ingress and Gather for every tick on the
 //! main thread, but instead of stepping it records the tick
-//! ([`defer_authority_step`]). After `ClientSet::Send` the authority's
+//! ([`defer_authority_step`]). After `ClientSet::Load` the authority's
 //! `SimWorld` and the recorded ticks go to a worker thread, which steps them
-//! while the main thread runs `Present`, `Ui` and `Effects`. Before
+//! while the main thread runs `Receive` through `Effects`. Before
 //! `ClientSet::Diag` the main thread takes the world back and publishes each
 //! stepped tick by running `FixedUpdate` again in publish mode, where only the
 //! Snapshot, Fanout and Bookkeeping sets run. Design and trade-offs:
@@ -174,8 +174,8 @@ pub(crate) fn register(app: &mut App, mode: AuthorityThreadMode) {
         .configure_sets(
             Update,
             AuthorityLaunchSet
-                .after(ClientSet::Send)
-                .before(ClientSet::Present),
+                .after(ClientSet::Load)
+                .before(ClientSet::Receive),
         )
         .add_systems(
             Update,
