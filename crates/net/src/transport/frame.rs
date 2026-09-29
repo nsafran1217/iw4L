@@ -228,10 +228,56 @@ impl From<std::io::Error> for TransportError {
     }
 }
 
-#[derive(Debug, Default)]
+/// The in-process transport between a listen server and its own client.
+///
+/// By default a frame goes through the same byte encoding a remote client
+/// gets. `IW4L_LOOPBACK_DIRECT=1` hands the [`Frame`] over as it is instead,
+/// which skips a full snapshot-meta encode and decode per tick; it is not the
+/// default because the meta wire sends only part of each entity state (e.g.
+/// `solid` arrives as 0), so the listen client would see fields a remote client
+/// does not. `IW4L_LOOPBACK_CHECK=1` hands frames over directly but also
+/// round-trips each one and logs any tick that differs.
+#[derive(Debug)]
 pub struct LoopbackTransport {
-    queue: std::collections::VecDeque<Vec<u8>>,
+    queue: std::collections::VecDeque<LoopbackItem>,
     world_decoder: WorldObjectSyncDecoder,
+    mode: LoopbackMode,
+}
+
+#[derive(Debug)]
+enum LoopbackItem {
+    Frame(Box<Frame>),
+    Bytes(Vec<u8>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoopbackMode {
+    Direct,
+    Wire,
+    Check,
+}
+
+impl LoopbackMode {
+    fn from_env() -> Self {
+        let set = |key| std::env::var(key).is_ok_and(|v| !v.is_empty() && v != "0");
+        if set("IW4L_LOOPBACK_CHECK") {
+            Self::Check
+        } else if set("IW4L_LOOPBACK_DIRECT") {
+            Self::Direct
+        } else {
+            Self::Wire
+        }
+    }
+}
+
+impl Default for LoopbackTransport {
+    fn default() -> Self {
+        Self {
+            queue: Default::default(),
+            world_decoder: Default::default(),
+            mode: LoopbackMode::from_env(),
+        }
+    }
 }
 
 impl LoopbackTransport {
@@ -242,20 +288,50 @@ impl LoopbackTransport {
     pub fn pending(&self) -> usize {
         self.queue.len()
     }
+
+    /// [`Transport::send`] for a frame the caller no longer needs: in direct
+    /// mode it moves into the queue instead of being cloned.
+    pub fn send_owned(&mut self, frame: Frame) -> Result<(), TransportError> {
+        if self.mode == LoopbackMode::Direct {
+            self.queue.push_back(LoopbackItem::Frame(Box::new(frame)));
+            return Ok(());
+        }
+        self.send(&frame)
+    }
 }
 
 impl Transport for LoopbackTransport {
     fn send(&mut self, frame: &Frame) -> Result<(), TransportError> {
-        self.queue.push_back(frame.to_bytes());
+        let item = match self.mode {
+            LoopbackMode::Wire => LoopbackItem::Bytes(frame.to_bytes()),
+            LoopbackMode::Direct => LoopbackItem::Frame(Box::new(frame.clone())),
+            LoopbackMode::Check => {
+                let bytes = frame.to_bytes();
+                let mut reader = WireReader::new(&bytes);
+                let decoded = Frame::decode(&mut reader, &mut self.world_decoder)?;
+                if decoded != *frame {
+                    diag::error!(
+                        Net,
+                        "loopback: tick {} differs after a wire round trip",
+                        frame.tick.0
+                    );
+                }
+                LoopbackItem::Frame(Box::new(frame.clone()))
+            }
+        };
+        self.queue.push_back(item);
         Ok(())
     }
 
     fn recv(&mut self) -> Result<Option<Frame>, TransportError> {
-        let Some(bytes) = self.queue.pop_front() else {
-            return Ok(None);
-        };
-        let mut reader = WireReader::new(&bytes);
-        Ok(Some(Frame::decode(&mut reader, &mut self.world_decoder)?))
+        match self.queue.pop_front() {
+            None => Ok(None),
+            Some(LoopbackItem::Frame(frame)) => Ok(Some(*frame)),
+            Some(LoopbackItem::Bytes(bytes)) => {
+                let mut reader = WireReader::new(&bytes);
+                Ok(Some(Frame::decode(&mut reader, &mut self.world_decoder)?))
+            }
+        }
     }
 }
 
