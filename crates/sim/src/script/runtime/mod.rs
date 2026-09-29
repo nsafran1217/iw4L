@@ -1244,16 +1244,17 @@ pub(crate) fn advance_scheduler(world: &mut World) {
     super::host::mechanics::deliver_finished(world);
     deliver_timers(world, now);
     deliver_external(world, now);
-    let threads: Vec<_> = world
-        .query::<(Entity, &Thread)>()
-        .iter(world)
-        .map(|(entity, thread)| (entity, thread.serial, entity_receivers(world, thread)))
-        .collect();
-    let dead: Vec<_> = threads
-        .into_iter()
-        .filter(|(_, _, receivers)| any_deleted(world, receivers))
-        .map(|(entity, serial, _)| (entity, serial))
-        .collect();
+    let orphaned = threads_waiting_on_deleted(world.resource::<Runtime>());
+    let dead: Vec<_> = if orphaned.is_empty() {
+        Vec::new()
+    } else {
+        world
+            .query::<(Entity, &Thread)>()
+            .iter(world)
+            .filter(|(_, thread)| orphaned.contains(&thread.serial))
+            .map(|(entity, thread)| (entity, thread.serial))
+            .collect()
+    };
     for (entity, serial) in dead {
         kill(world, entity, serial);
     }
@@ -1282,8 +1283,7 @@ pub(crate) fn advance_scheduler(world: &mut World) {
         let Some(entity) = find_thread(world, serial) else {
             continue;
         };
-        let receivers = entity_receivers(world, world.get::<Thread>(entity).unwrap());
-        if any_deleted(world, &receivers) {
+        if waits_on_deleted(world.resource::<Runtime>(), serial) {
             kill(world, entity, serial);
             continue;
         }
@@ -1555,23 +1555,28 @@ fn copy_value(world: &mut World, value: Value) -> Result<Value, String> {
 }
 
 /// Deleting a waited-on object ends the thread; a thread whose self is deleted keeps running.
-fn entity_receivers(world: &World, thread: &Thread) -> Vec<Value> {
-    world
-        .resource::<Runtime>()
+/// Whether `id` is an object that has been deleted (or collected) while
+/// something still waits on it.
+fn receiver_deleted(runtime: &Runtime, receiver: &Value) -> bool {
+    matches!(receiver, Value::Object(id) if runtime.dead.contains(id) || !runtime.objects.contains_key(id))
+}
+
+/// Serials of threads waiting on an object that has been deleted, in one pass
+/// over the waiters rather than one pass per thread.
+fn threads_waiting_on_deleted(runtime: &Runtime) -> std::collections::BTreeSet<u64> {
+    runtime
         .waiters
         .iter()
-        .filter(|w| w.thread == thread.serial)
-        .map(|w| &w.receiver)
-        .filter(|value| matches!(value, Value::Object(_)))
-        .cloned()
+        .filter(|waiter| receiver_deleted(runtime, &waiter.receiver))
+        .map(|waiter| waiter.thread)
         .collect()
 }
 
-fn any_deleted(world: &World, receivers: &[Value]) -> bool {
-    let runtime = world.resource::<Runtime>();
-    receivers.iter().any(|value| {
-        matches!(value, Value::Object(id) if runtime.dead.contains(id) || !runtime.objects.contains_key(id))
-    })
+fn waits_on_deleted(runtime: &Runtime, serial: u64) -> bool {
+    runtime
+        .waiters
+        .iter()
+        .any(|waiter| waiter.thread == serial && receiver_deleted(runtime, &waiter.receiver))
 }
 
 impl Runtime {
