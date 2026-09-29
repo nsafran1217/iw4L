@@ -40,6 +40,9 @@ pub struct DynEntWakeBroadphase {
     candidates: Vec<Entity>,
     generation: u32,
     built: bool,
+    /// Whether the entries were built with the model catalog present (the
+    /// radii come from it).
+    built_with_catalog: Option<bool>,
     pub entry_n: u32,
     pub cell_n: u32,
     pub query_n: u32,
@@ -85,16 +88,21 @@ fn wake_query_cell_n(lo: (i32, i32, i32), hi: (i32, i32, i32)) -> i64 {
 }
 
 impl DynEntWakeBroadphase {
-    fn rebuild(&mut self, entries: impl IntoIterator<Item = DynEntWakeEntry>) {
-        self.entries.clear();
-        self.cells.clear();
-        self.candidate_indices.clear();
-        self.candidates.clear();
+    /// The per-frame query statistics, reset every frame whether or not the
+    /// broadphase is rebuilt.
+    fn reset_frame_stats(&mut self) {
         self.query_n = 0;
         self.candidate_n = 0;
         self.full_scan_n = 0;
         self.fallback_n = 0;
         self.query_ms = 0.0;
+    }
+
+    fn rebuild(&mut self, entries: impl IntoIterator<Item = DynEntWakeEntry>) {
+        self.entries.clear();
+        self.cells.clear();
+        self.candidate_indices.clear();
+        self.candidates.clear();
         self.built = true;
 
         for entry in entries {
@@ -178,14 +186,35 @@ impl DynEntWakeBroadphase {
     }
 }
 
+/// Rebuilds the wake broadphase when a dyn ent moved, changed, appeared or went
+/// away (or the model catalog changed). Dyn ents rest until something wakes
+/// them, so most frames the previous build still holds.
 pub(crate) fn rebuild_dyn_ent_wake_broadphase(
     catalog: Option<Res<asset_world::MapXModelSceneCatalog>>,
-    instances: Query<(Entity, &WorldDynEntInstance, &Transform), With<DynEntModelEntity>>,
+    instances: Query<
+        (Entity, Ref<WorldDynEntInstance>, Ref<Transform>),
+        With<DynEntModelEntity>,
+    >,
+    mut removed: RemovedComponents<DynEntModelEntity>,
     mut broadphase: ResMut<DynEntWakeBroadphase>,
 ) {
+    broadphase.reset_frame_stats();
+    let removed_any = removed.read().count() > 0;
+    let stale = !broadphase.built
+        || removed_any
+        || broadphase.built_with_catalog != Some(catalog.is_some())
+        || catalog.as_ref().is_some_and(|catalog| catalog.is_changed())
+        || instances.iter().len() != broadphase.entries.len()
+        || instances
+            .iter()
+            .any(|(_, inst, transform)| inst.is_changed() || transform.is_changed());
+    if !stale {
+        return;
+    }
+    broadphase.built_with_catalog = Some(catalog.is_some());
     let catalog = catalog.as_deref();
     broadphase.rebuild(instances.iter().map(|(entity, inst, transform)| {
-        let radius = can_wake(inst)
+        let radius = can_wake(&inst)
             .map(|_| xmodel_radius(catalog, &inst.current_model).max(1.0))
             .unwrap_or(0.0);
         DynEntWakeEntry {
