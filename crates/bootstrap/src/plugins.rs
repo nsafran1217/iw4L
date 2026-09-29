@@ -1,6 +1,7 @@
 use assets::AssetPlugin;
 use audio::AudioPlugin;
 use bevy::{
+    ecs::schedule::ScheduleLabel,
     log::LogPlugin,
     prelude::*,
     render::{
@@ -44,24 +45,24 @@ pub fn add_runtime_plugins_with_role(app: &mut App, role: RuntimeRole) {
         .add_plugins(RenderPlugin)
         .add_plugins(SessionPlugin);
 
-    app.edit_schedule(Update, |schedule| {
-        schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
-    });
+    let threading = ScheduleThreading::from_env();
+    if !threading.main {
+        for label in [
+            Update.intern(),
+            First.intern(),
+            PreUpdate.intern(),
+            PostUpdate.intern(),
+            Last.intern(),
+        ] {
+            app.edit_schedule(label, |schedule| {
+                schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+            });
+        }
+    }
 
-    app.edit_schedule(First, |schedule| {
-        schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
-    });
-    app.edit_schedule(PreUpdate, |schedule| {
-        schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
-    });
-    app.edit_schedule(PostUpdate, |schedule| {
-        schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
-    });
-    app.edit_schedule(Last, |schedule| {
-        schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
-    });
-
-    if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+    if !threading.render
+        && let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp)
+    {
         render_app.edit_schedule(bevy::render::renderer::RenderGraph, |schedule| {
             schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         });
@@ -77,6 +78,38 @@ pub fn add_runtime_plugins_with_role(app: &mut App, role: RuntimeRole) {
         render_app.edit_schedule(bevy::render::ExtractSchedule, |schedule| {
             schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         });
+    }
+}
+
+const MULTI_THREADED_ENV: &str = "IW4L_MULTI_THREADED";
+
+/// Which schedule groups keep Bevy's multi-threaded executor. Both run
+/// single-threaded by default. `IW4L_MULTI_THREADED=main`, `render` or
+/// `main,render` (or `all`) opts a group back in: on a slow many-core CPU the
+/// executor's per-system cost can be worth paying to run systems side by side.
+struct ScheduleThreading {
+    main: bool,
+    render: bool,
+}
+
+impl ScheduleThreading {
+    fn from_env() -> Self {
+        let value = std::env::var(MULTI_THREADED_ENV).unwrap_or_default();
+        let groups: Vec<&str> = value.split(',').map(str::trim).collect();
+        let all = groups.contains(&"all");
+        let threading = Self {
+            main: all || groups.contains(&"main"),
+            render: all || groups.contains(&"render"),
+        };
+        if threading.main || threading.render {
+            diag::info!(
+                Launch,
+                "schedules: multi-threaded main={} render={}",
+                threading.main,
+                threading.render
+            );
+        }
+        threading
     }
 }
 
